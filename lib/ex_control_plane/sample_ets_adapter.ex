@@ -39,6 +39,8 @@ defmodule ExControlPlane.SampleEtsAdapter do
   end
 
   def generate_resources(_tid, _cluster_id, _changes) do
+    from_oas3 = routes_from_oas3()
+
     %ExControlPlane.Adapter.ClusterConfig{
       listeners: [
         %{
@@ -72,15 +74,7 @@ defmodule ExControlPlane.SampleEtsAdapter do
                         %{
                           "name" => "httpbin",
                           "domains" => ["*"],
-                          "routes" => [
-                            %{
-                              "match" => %{"prefix" => "/"},
-                              "route" => %{
-                                "cluster" => "httpbin",
-                                "prefix_rewrite" => "/"
-                              }
-                            }
-                          ]
+                          "routes" => from_oas3.routes
                         }
                       ]
                     }
@@ -91,9 +85,48 @@ defmodule ExControlPlane.SampleEtsAdapter do
           ]
         }
       ],
-      clusters: [
+      clusters: from_oas3.clusters
+    }
+  end
+
+  defp routes_from_oas3 do
+    oas3 = %{
+      "openapi" => "3.0.3",
+      "info" => %{},
+      "servers" => [%{"url" => "https://httpbin.org"}],
+      "paths" => %{
+        "/{requestPath}" => %{
+          "get" => %{
+            "responses" => %{
+              "200" => %{
+                "content" => "application/json"
+              }
+            }
+          },
+          "post" => %{
+            "requestBody" => %{
+              "content" => %{"application/json" => %{}}
+            },
+            "responses" => %{
+              "200" => %{
+                "content" => %{"application/json" => %{}}
+              }
+            }
+          }
+        }
+      }
+    }
+
+    {routes, clusters} = ExControlPlane.OpenapiTransform.transform("sample-api", "/test", oas3)
+    %{routes: routes, clusters: clusters_from_oas3_transform(clusters)}
+  end
+
+  defp clusters_from_oas3_transform(clusters) do
+    Enum.map(
+      clusters,
+      fn {cluster_name, cluster_uri} ->
         %{
-          "name" => "httpbin",
+          "name" => cluster_name,
           "connect_timeout" => "5s",
           "type" => "STRICT_DNS",
           "lb_policy" => "ROUND_ROBIN",
@@ -102,11 +135,11 @@ defmodule ExControlPlane.SampleEtsAdapter do
             "typed_config" => %{
               "@type" =>
                 "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
-              "sni" => "httpbin.org"
+              "sni" => cluster_uri.host
             }
           },
           "load_assignment" => %{
-            "cluster_name" => "httpbin",
+            "cluster_name" => cluster_name,
             "endpoints" => [
               %{
                 "lb_endpoints" => [
@@ -114,8 +147,8 @@ defmodule ExControlPlane.SampleEtsAdapter do
                     "endpoint" => %{
                       "address" => %{
                         "socket_address" => %{
-                          "address" => "httpbin.org",
-                          "port_value" => 443
+                          "address" => cluster_uri.host,
+                          "port_value" => cluster_uri.port
                         }
                       }
                     }
@@ -125,7 +158,7 @@ defmodule ExControlPlane.SampleEtsAdapter do
             ]
           }
         }
-      ]
-    }
+      end
+    )
   end
 end
