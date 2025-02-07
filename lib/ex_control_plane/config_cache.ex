@@ -190,7 +190,7 @@ defmodule ExControlPlane.ConfigCache do
     :ets.foldl(
       fn {{_cluster, _api_id}, _hash, config, _ts, _nodelete}, acc ->
         if cluster == config.cluster do
-          iterator_fn.(config, acc)
+          iterator_fn.(config.config, acc)
         else
           acc
         end
