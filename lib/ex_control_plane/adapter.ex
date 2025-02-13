@@ -12,8 +12,6 @@ defmodule ExControlPlane.Adapter do
               mapper_fn :: (config :: config(), acc :: any() -> {[any()], acc :: any()}),
               acc :: any()
             ) :: {[any()], acc :: any()}
-  @callback get_api_config(state :: any(), cluster_id :: String.t(), api_id :: String.t()) ::
-              {:ok, config()} | {:error, reason :: any()}
 
   @callback generate_resources(state :: any(), cluster_id :: String.t(), changes :: [String.t()]) ::
               cluster_config()
