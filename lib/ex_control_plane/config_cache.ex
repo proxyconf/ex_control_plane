@@ -12,10 +12,8 @@ defmodule ExControlPlane.ConfigCache do
   @route_configuration "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
   @scoped_route_configuration "type.googleapis.com/envoy.config.route.v3.ScopedRouteConfiguration"
 
-  @config_table :config_cache_tbl_configs
   @resources_table :config_cache_tbl_resources
   def start_link(_args) do
-    :ets.new(@config_table, [:public, :named_table])
     :ets.new(@resources_table, [:public, :named_table])
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -79,12 +77,9 @@ defmodule ExControlPlane.ConfigCache do
         fn %ExControlPlane.Adapter.ApiConfig{
              cluster: cluster,
              api_id: api_id
-           } = config,
+           },
            acc ->
-          # config is coming directly from the database layer, it's already validated
-          insert_config(config)
           Logger.info(cluster: cluster, api_id: api_id, message: "API Config init")
-
           {{cluster, api_id}, acc}
         end,
         # acc
@@ -100,11 +95,6 @@ defmodule ExControlPlane.ConfigCache do
   end
 
   def handle_call({:load_events, cluster, events}, _from, state) do
-    Enum.each(events, fn {event, api_id} ->
-      update_config_table(state, cluster, api_id, event)
-      Logger.info(cluster: cluster, api_id: api_id, message: "config #{event}")
-    end)
-
     {_, changed_apis} =
       Enum.reject(events, fn {event, _api_id} -> event == :deleted end)
       |> Enum.unzip()
@@ -117,34 +107,6 @@ defmodule ExControlPlane.ConfigCache do
   def handle_call(req, _from, state) do
     Logger.error("Unhandled Request #{inspect(req)}")
     {:reply, {:error, :unhandled_request}, state}
-  end
-
-  defp insert_config(%ExControlPlane.Adapter.ApiConfig{} = config, no_delete \\ false) do
-    :ets.insert(
-      @config_table,
-      {{config.cluster, config.api_id}, config.hash, config, DateTime.utc_now(), no_delete}
-    )
-
-    :ok
-  end
-
-  defp update_config_table(_state, cluster, api_id, :deleted) do
-    :ets.delete(@config_table, {cluster, api_id})
-    :ok
-  end
-
-  defp update_config_table(state, cluster, api_id, _event) do
-    case state.adapter_mod.get_api_config(state.adapter_state, cluster, api_id) do
-      {:error, reason} ->
-        Logger.error(
-          cluster: cluster,
-          api: api_id,
-          message: "Skip config table update due to #{inspect(reason)}"
-        )
-
-      {:ok, config} ->
-        insert_config(config)
-    end
   end
 
   defp cache_notify_resources(state, cluster, changed_apis) do
@@ -184,19 +146,5 @@ defmodule ExControlPlane.ConfigCache do
       [] -> []
       [{_, resources}] -> resources
     end
-  end
-
-  def reduce_api_configs(cluster, acc, iterator_fn) do
-    :ets.foldl(
-      fn {{_cluster, _api_id}, _hash, config, _ts, _nodelete}, acc ->
-        if cluster == config.cluster do
-          iterator_fn.(config.config, acc)
-        else
-          acc
-        end
-      end,
-      acc,
-      @config_table
-    )
   end
 end
