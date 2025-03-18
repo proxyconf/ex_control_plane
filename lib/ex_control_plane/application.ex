@@ -10,6 +10,7 @@ defmodule ExControlPlane.Application do
   def start(_type, _args) do
     children =
       [
+        ExControlPlane.Snapshot.Supervisor,
         DynamicSupervisor.child_spec(name: ExControlPlane.StreamSupervisor),
         Registry.child_spec(keys: :unique, name: ExControlPlane.StreamRegistry),
         ExControlPlane.ConfigCache,
