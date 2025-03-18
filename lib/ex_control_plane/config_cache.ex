@@ -18,17 +18,6 @@ defmodule ExControlPlane.ConfigCache do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
-  # currently only used for testing
-  def load_external_config(config_name, config) do
-    case GenServer.call(__MODULE__, {:load_external_config, config_name, config}) do
-      {:ok, cluster} ->
-        wait_until_in_sync(cluster)
-
-      error ->
-        error
-    end
-  end
-
   def load_events(cluster, events) do
     case GenServer.multi_call(
            [node() | Node.list()],
@@ -64,9 +53,7 @@ defmodule ExControlPlane.ConfigCache do
      %{
        adapter_mod: adapter_mod,
        adapter_state: adapter_mod.init(),
-       streams: %{},
-       tref: nil,
-       index: nil
+       streams: %{}
      }, {:continue, nil}}
   end
 
