@@ -5,6 +5,8 @@ defmodule ExControlPlane.ConfigCache do
   """
   use GenServer
   require Logger
+  alias ExControlPlane.Adapter.ClusterConfig
+  alias ExControlPlane.Snapshot.Snapshot
 
   @cluster "type.googleapis.com/envoy.config.cluster.v3.Cluster"
   @listener "type.googleapis.com/envoy.config.listener.v3.Listener"
@@ -54,10 +56,21 @@ defmodule ExControlPlane.ConfigCache do
        adapter_mod: adapter_mod,
        adapter_state: adapter_mod.init(),
        streams: %{}
-     }, {:continue, nil}}
+     }, {:continue, :bootstrap}}
   end
 
-  def handle_continue(_continue, state) do
+  def handle_continue(:bootstrap, state) do
+    case Snapshot.get() do
+      {:ok, data} ->
+        Enum.each(data, fn e -> :ets.insert(@resources_table, e) end)
+        notify_resources()
+
+      {:error, reason} ->
+        Logger.info("Loading snapshot failed due to #{inspect(reason)}")
+
+        :ok
+    end
+
     {res, _} =
       state.adapter_mod.map_reduce(
         state.adapter_state,
@@ -75,8 +88,14 @@ defmodule ExControlPlane.ConfigCache do
 
     Enum.group_by(res, fn {cluster, _} -> cluster end, fn {_, api_id} -> api_id end)
     |> Enum.each(fn {cluster, api_ids} ->
-      cache_notify_resources(state, cluster, api_ids)
+      state
+      |> generate_config(cluster, api_ids)
+      |> cache_notify_resources(cluster)
     end)
+
+    # if we get this far, let's do an initial snapshot of the
+    # potentially changed data.
+    create_snapshot()
 
     {:noreply, state}
   end
@@ -86,7 +105,9 @@ defmodule ExControlPlane.ConfigCache do
       Enum.reject(events, fn {event, _api_id} -> event == :deleted end)
       |> Enum.unzip()
 
-    cache_notify_resources(state, cluster, changed_apis)
+    state
+    |> generate_config(cluster, changed_apis)
+    |> cache_notify_resources(cluster)
 
     {:reply, :ok, state}
   end
@@ -96,15 +117,29 @@ defmodule ExControlPlane.ConfigCache do
     {:reply, {:error, :unhandled_request}, state}
   end
 
-  defp cache_notify_resources(state, cluster, changed_apis) do
-    %ExControlPlane.Adapter.ClusterConfig{} =
-      config =
-      state.adapter_mod.generate_resources(
-        state.adapter_state,
-        cluster,
-        changed_apis
+  defp generate_config(state, cluster, changed_apis) do
+    state.adapter_mod.generate_resources(
+      state.adapter_state,
+      cluster,
+      changed_apis
+    )
+  rescue
+    error ->
+      Logger.error(
+        "Error generating configuration for cluster #{inspect(cluster)}: #{inspect(error)}"
       )
 
+      {:error, :failed_generating_configuration}
+  catch
+    error ->
+      Logger.error(
+        "Error generating configuration for cluster #{inspect(cluster)}: #{inspect(error)}"
+      )
+
+      {:error, :failed_generating_configuration}
+  end
+
+  defp cache_notify_resources(%ClusterConfig{} = config, cluster) do
     resources =
       %{
         @listener => config.listeners,
@@ -115,12 +150,16 @@ defmodule ExControlPlane.ConfigCache do
       }
 
     Enum.each(resources, fn {type, resources_for_type} ->
-      hash = :erlang.phash2(resources_for_type)
-
       :ets.insert(
         @resources_table,
         {{cluster, type}, resources_for_type}
       )
+    end)
+
+    :ok = create_snapshot()
+
+    Enum.each(resources, fn {type, resources_for_type} ->
+      hash = checksum(resources_for_type)
 
       # not sending the resources to the stream pid, instead let the
       # the stream process fetch the resources if required
@@ -128,10 +167,45 @@ defmodule ExControlPlane.ConfigCache do
     end)
   end
 
+  defp cache_notify_resources(_, cluster) do
+    Logger.error(
+      "Adapter generated invalid configuration for cluster #{inspect(cluster)} (not a %ClusterConfig{})"
+    )
+  end
+
+  defp notify_resources do
+    :ets.foldl(
+      fn {{cluster, type}, resources}, acc ->
+        hash = checksum(resources)
+        ExControlPlane.Stream.push_resource_changes(cluster, type, hash)
+        acc
+      end,
+      [],
+      @resources_table
+    )
+  end
+
+  defp checksum(data) do
+    binary = :erlang.term_to_binary(data, [:deterministic])
+    :crypto.hash(:md5, binary)
+  end
+
+  defp create_snapshot do
+    res = :ets.tab2list(@resources_table)
+    Snapshot.put(res)
+  end
+
   def get_resources(cluster, type_url) do
-    case :ets.lookup(@resources_table, {cluster, type_url}) do
-      [] -> []
-      [{_, resources}] -> resources
+    case {:ets.whereis(@resources_table), :ets.lookup(@resources_table, {cluster, type_url})} do
+      {:undefined, _} -> []
+      {_, []} -> []
+      {_, [{_, resources}]} -> resources
     end
+  end
+
+  def ms2s(milliseconds) do
+    seconds = trunc(milliseconds / 1000)
+    milliseconds = rem(milliseconds, 1000)
+    "#{seconds}.#{milliseconds}s"
   end
 end
