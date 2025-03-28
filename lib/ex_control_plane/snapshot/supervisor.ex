@@ -17,7 +17,10 @@ defmodule ExControlPlane.Snapshot.Supervisor do
         []
       end ++
         [
-          {ExControlPlane.Snapshot.Snapshot, snapshot_backend_mod: backend}
+          {ExControlPlane.Snapshot.Snapshot,
+           snapshot_backend_mod: backend,
+           persist_interval:
+             Application.get_env(:ex_control_plane, :snapshot_persist_interval, 10 * 60 * 1000)}
         ]
 
     Supervisor.init(children, strategy: :rest_for_one)
