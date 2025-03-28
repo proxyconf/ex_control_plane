@@ -56,6 +56,9 @@ defmodule ExControlPlane.Snapshot.S3 do
           body = :erlang.binary_to_term(body)
           {:ok, body}
 
+        {:error, {:http_error, 404, %{status_code: 404}}} ->
+          {:error, :no_snapshot_found}
+
         {:ok, %{status_code: code}} ->
           {:error, code}
 

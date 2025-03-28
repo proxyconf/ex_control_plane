@@ -36,7 +36,10 @@ defmodule ExControlPlane.Snapshot.Snapshot do
   @impl true
   def init(args) do
     :ets.new(@snapshot_tbl, [:public, :named_table])
-    persist_interval = Keyword.get(args, :persist_interval, 10 * 60 * 1000)
+
+    persist_interval =
+      Keyword.get(args, :persist_interval, 10 * 60 * 1000)
+
     backend_mod = Keyword.get(args, :snapshot_backend_mod)
 
     if backend_mod do
@@ -59,8 +62,15 @@ defmodule ExControlPlane.Snapshot.Snapshot do
       Logger.info("Snapshot read")
       :ets.insert(@snapshot_tbl, {@snapshot_key, data})
 
-      {:noreply, %Snapshot{state | checksum: checksum}, interval}
+      _ = persist_after(interval)
+
+      {:noreply, %Snapshot{state | checksum: checksum}}
     else
+      {:error, :no_snapshot_found} ->
+        Logger.warning("No snapshot found")
+        _ = persist_after(interval)
+        {:noreply, state}
+
       {:error, error} ->
         failed_reading_snapshot(state, error)
 
@@ -98,12 +108,13 @@ defmodule ExControlPlane.Snapshot.Snapshot do
   end
 
   @impl true
-  def handle_info(:timeout, %Snapshot{persist_interval: interval} = state) do
+  def handle_info(:persist, %Snapshot{persist_interval: interval} = state) do
     checksum = maybe_persist(state)
-    {:noreply, %Snapshot{state | checksum: checksum}, interval}
+    _ = persist_after(interval)
+    {:noreply, %Snapshot{state | checksum: checksum}}
   end
 
-  defp maybe_persist(%Snapshot{checksum: old_checksum, backend_mod: backend_mod} = state) do
+  defp maybe_persist(%Snapshot{checksum: old_checksum, backend_mod: backend_mod}) do
     Logger.debug("Checking snapshot for changes")
     # persist snapshot if checksum differs
     case :ets.lookup(@snapshot_tbl, @snapshot_key) do
@@ -124,12 +135,16 @@ defmodule ExControlPlane.Snapshot.Snapshot do
           end
         else
           Logger.debug("Snapshot unchanged")
-          state
+          old_checksum
         end
 
       _ ->
         old_checksum
     end
+  end
+
+  defp persist_after(interval) do
+    Process.send_after(self(), :persist, interval)
   end
 
   defp checksum(data) do
