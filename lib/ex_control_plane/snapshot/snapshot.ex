@@ -24,6 +24,9 @@ defmodule ExControlPlane.Snapshot.Snapshot do
   end
 
   def get() do
+    # since this call will come after attempting to read the snapshot
+    # in :read (handle_continue) directly after init - it will always
+    # return snapshot data if any are available to be read.
     GenServer.call(__MODULE__, :get, :infinity)
   end
 
