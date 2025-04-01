@@ -59,9 +59,10 @@ defmodule ExControlPlane.Snapshot.Snapshot do
         :read,
         %Snapshot{backend_mod: backend_mod, persist_interval: interval} = state
       ) do
-    with {:ok, %{data: data, checksum: checksum, version: version}} <- backend_mod.read(),
-         :ok <- check_version(version),
-         ^checksum <- checksum(data) do
+    with {:ok, data} <- read_snapshot(backend_mod),
+         :ok <- check_version(data),
+         {:ok, checksum} <- verify_checksum(data),
+         %{data: data} <- data do
       Logger.info("Snapshot read")
       :ets.insert(@snapshot_tbl, {@snapshot_key, data})
 
@@ -82,11 +83,20 @@ defmodule ExControlPlane.Snapshot.Snapshot do
     end
   end
 
-  defp check_version(version) do
+  defp check_version(%{version: version}) do
     if version == @snapshot_version do
       :ok
     else
       {:error, "version_mismatch, got (#{version}), expected (#{@snapshot_version})"}
+    end
+  end
+
+  defp check_version(_), do: "no version information found"
+
+  defp verify_checksum(%{data: data, checksum: checksum}) do
+    case checksum(data) do
+      ^checksum -> {:ok, checksum}
+      _ -> {:error, :checksum}
     end
   end
 
@@ -127,13 +137,13 @@ defmodule ExControlPlane.Snapshot.Snapshot do
         if checksum != old_checksum do
           data = %{data: data, checksum: checksum, version: @snapshot_version}
 
-          case backend_mod.write(data) do
+          case write_snapshot(data, backend_mod) do
             :ok ->
               Logger.info("Snapshot persisted")
               checksum
 
             {:error, error} ->
-              Logger.warning("Failed to persist snapshot due to: #{inspect(error)}")
+              Logger.warning("Writing snapshot failed due to: #{inspect(error)}")
               old_checksum
           end
         else
@@ -144,6 +154,50 @@ defmodule ExControlPlane.Snapshot.Snapshot do
       _ ->
         old_checksum
     end
+  end
+
+  defp read_snapshot(backend_mod) do
+    start_metadata = %{}
+
+    :telemetry.span(
+      [:ex_control_plane, :snapshot, :read],
+      start_metadata,
+      fn ->
+        result = backend_mod.read()
+        {result, %{count: 1}, %{}}
+      end
+    )
+  rescue
+    error ->
+      {:error, error}
+  catch
+    error ->
+      {:error, error}
+
+    :exit, error ->
+      {:error, error}
+  end
+
+  defp write_snapshot(data, backend_mod) do
+    start_metadata = %{}
+
+    :telemetry.span(
+      [:ex_control_plane, :snapshot, :write],
+      start_metadata,
+      fn ->
+        result = backend_mod.write(data)
+        {result, %{count: 1}, %{}}
+      end
+    )
+  rescue
+    error ->
+      {:error, error}
+  catch
+    error ->
+      {:error, error}
+
+    :exit, error ->
+      {:error, error}
   end
 
   defp persist_after(interval) do
