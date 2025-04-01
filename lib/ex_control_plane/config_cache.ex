@@ -63,6 +63,7 @@ defmodule ExControlPlane.ConfigCache do
     case Snapshot.get() do
       {:ok, data} ->
         Enum.each(data, fn e -> :ets.insert(@resources_table, e) end)
+        Logger.info("Bootstrapped from snapshot. Notifying resources.")
         notify_resources()
 
       {:error, reason} ->
@@ -118,10 +119,21 @@ defmodule ExControlPlane.ConfigCache do
   end
 
   defp generate_config(state, cluster, changed_apis) do
-    state.adapter_mod.generate_resources(
-      state.adapter_state,
-      cluster,
-      changed_apis
+    start_metadata = %{}
+
+    :telemetry.span(
+      [:ex_control_plane, :adapter, :generate],
+      start_metadata,
+      fn ->
+        result =
+          state.adapter_mod.generate_resources(
+            state.adapter_state,
+            cluster,
+            changed_apis
+          )
+
+        {result, %{count: 1}, %{}}
+      end
     )
   rescue
     error ->

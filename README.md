@@ -19,3 +19,26 @@ Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_do
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at <https://hexdocs.pm/ex_control_plane>.
 
+## Telemetry
+
+The ExControlPlane emits various metrics.
+
+### Adapter config callback
+
+```elixir
+[:ex_control_plane, :adapter, :generate, :start]
+[:ex_control_plane, :adapter, :generate, :stop]
+[:ex_control_plane, :adapter, :generate, :exception]
+```
+
+### Snapshot read/write
+
+```
+[:ex_control_plane, :snapshot, :write, :start]
+[:ex_control_plane, :snapshot, :write, :stop]
+[:ex_control_plane, :snapshot, :write, :exception]
+[:ex_control_plane, :snapshot, :read, :start]
+[:ex_control_plane, :snapshot, :read, :stop]
+[:ex_control_plane, :snapshot, :read, :exception]
+
+```
