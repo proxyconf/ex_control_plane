@@ -22,7 +22,11 @@ defmodule ExControlPlane.Stream do
          {:ok, pid} <-
            DynamicSupervisor.start_child(
              ExControlPlane.StreamSupervisor,
-             {__MODULE__, [grpc_stream, node_info, type_url]}
+             %{
+               id: ExControlPlane.Stream,
+               start: {__MODULE__, :start_link, [[grpc_stream, node_info, type_url]]},
+               restart: :transient
+             }
            ) do
       {:ok, pid}
     else
