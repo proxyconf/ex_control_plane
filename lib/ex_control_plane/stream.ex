@@ -74,7 +74,7 @@ defmodule ExControlPlane.Stream do
            %{in_sync: false}
          ) do
       {:ok, _pid} ->
-        monitor_grpc_stream_pid(grpc_stream)
+        monitor_grpc_stream_pid(grpc_stream.payload.pid)
 
         {:ok,
          %{
@@ -146,7 +146,7 @@ defmodule ExControlPlane.Stream do
     {:stop, :normal, state}
   end
 
-  defp monitor_grpc_stream_pid(%GRPC.Server.Stream{payload: %{pid: pid}}) do
+  defp monitor_grpc_stream_pid(pid) do
     Process.monitor(pid)
   end
 
