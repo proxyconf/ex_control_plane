@@ -78,6 +78,11 @@ defmodule ExControlPlane.Stream do
            %{in_sync: false}
          ) do
       {:ok, _pid} ->
+        Logger.info(
+          cluster: node_info.cluster,
+          message: "GRPC stream for type #{type_url} registered."
+        )
+
         monitor_grpc_stream_pid(grpc_stream.payload.pid)
 
         {:ok,
@@ -91,6 +96,11 @@ defmodule ExControlPlane.Stream do
          }}
 
       {:error, {:already_registered, _pid} = error} ->
+        Logger.warning(
+          cluster: node_info.cluster,
+          message: "GRPC stream for type #{type_url} already registered."
+        )
+
         {:stop, error}
     end
   end
