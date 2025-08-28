@@ -76,9 +76,11 @@ defmodule ExControlPlane.Snapshot.Snapshot do
         {:noreply, state}
 
       {:error, error} ->
+        _ = persist_after(interval)
         failed_reading_snapshot(state, error)
 
       error ->
+        _ = persist_after(interval)
         failed_reading_snapshot(state, error)
     end
   end
