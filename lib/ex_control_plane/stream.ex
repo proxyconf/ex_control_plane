@@ -58,12 +58,12 @@ defmodule ExControlPlane.Stream do
     num_unsynchronized_streams == 0
   end
 
-  def event(grpc_stream, node_info, type_url, version) do
+  def event(grpc_stream, node_info, type_url, {version, error}) do
     {:ok, pid} = ensure_registred(grpc_stream, node_info, type_url)
 
     GenServer.call(
       pid,
-      {:event, version}
+      {:event, version, error}
     )
   end
 
@@ -105,11 +105,11 @@ defmodule ExControlPlane.Stream do
     end
   end
 
-  def handle_call({:event, version}, _from, %{waiting_ack: waiting_ack} = state) do
+  def handle_call({:event, version, error}, _from, %{waiting_ack: waiting_ack} = state) do
     node_info = state.node_info
 
     case state.version do
-      ^version ->
+      ^version when is_nil(error) ->
         # nothing to do
         Logger.info(
           cluster: node_info.cluster,
@@ -119,18 +119,32 @@ defmodule ExControlPlane.Stream do
         update_status(%{in_sync: true})
         {:reply, :ok, %{state | waiting_ack: nil}}
 
-      nil ->
+      nil when is_nil(error) ->
         # new node
         {:reply, :ok, push_resources(%{state | version: 0})}
 
-      _ when waiting_ack != nil and waiting_ack > version ->
-        # if many updates are in flight, keep the waiting ack
-
+      _ when is_nil(error) and waiting_ack != nil and waiting_ack > version ->
+        # if many updates are in flight, keep the waiting ack (TBH, not sure if this can happen)
         Logger.info(
           cluster: node_info.cluster,
           message:
             "#{state.type_url} Acked older version by #{node_info.node_id} version #{version}, current version is #{state.version}."
         )
+
+        update_status(%{in_sync: false})
+
+        # keep state
+        {:reply, :ok, state}
+
+      _ when not is_nil(error) ->
+        # NACK
+        Logger.warning(
+          cluster: node_info.cluster,
+          message:
+            "#{state.type_url} Error rolling out version #{version} by #{node_info.node_id}, current version is #{state.version}. Error is #{inspect(error)}"
+        )
+
+        update_status(%{in_sync: false})
 
         # keep state
         {:reply, :ok, state}

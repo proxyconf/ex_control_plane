@@ -15,32 +15,19 @@ defmodule ExControlPlane.ConfigCache do
   @scoped_route_configuration "type.googleapis.com/envoy.config.route.v3.ScopedRouteConfiguration"
 
   @resources_table :config_cache_tbl_resources
+  @resources_candidates_table :config_cache_tbl_resources_candidates
   def start_link(_args) do
     :ets.new(@resources_table, [:public, :named_table])
+    :ets.new(@resources_candidates_table, [:public, :named_table])
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
-  def load_events(cluster, events) do
-    case GenServer.multi_call(
-           [node() | Node.list()],
-           __MODULE__,
-           {:load_events, cluster, events}
-         ) do
-      {_, []} ->
-        wait_until_in_sync(cluster)
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp wait_until_in_sync(cluster) do
-    if ExControlPlane.Stream.in_sync(cluster) do
-      :ok
-    else
-      Process.sleep(100)
-      wait_until_in_sync(cluster)
-    end
+  def load_events(cluster, events, sync_wait_timeout \\ 5000, timeout \\ :infinity) do
+    GenServer.call(
+      __MODULE__,
+      {:load_events, cluster, events, sync_wait_timeout},
+      timeout
+    )
   end
 
   def init(_args) do
@@ -62,7 +49,11 @@ defmodule ExControlPlane.ConfigCache do
   def handle_continue(:bootstrap, state) do
     case Snapshot.get() do
       {:ok, data} ->
-        Enum.each(data, fn e -> :ets.insert(@resources_table, e) end)
+        Enum.each(data, fn e ->
+          :ets.insert(@resources_table, e)
+          :ets.insert(@resources_candidates_table, e)
+        end)
+
         Logger.info("Bootstrapped from snapshot. Notifying resources.")
         notify_resources()
 
@@ -72,27 +63,7 @@ defmodule ExControlPlane.ConfigCache do
         :ok
     end
 
-    {res, _} =
-      state.adapter_mod.map_reduce(
-        state.adapter_state,
-        fn %ExControlPlane.Adapter.ApiConfig{
-             cluster: cluster,
-             api_id: api_id
-           },
-           acc ->
-          Logger.info(cluster: cluster, api_id: api_id, message: "API Config init")
-          {{cluster, api_id}, acc}
-        end,
-        # acc
-        []
-      )
-
-    Enum.group_by(res, fn {cluster, _} -> cluster end, fn {_, api_id} -> api_id end)
-    |> Enum.each(fn {cluster, api_ids} ->
-      state
-      |> generate_config(cluster, api_ids)
-      |> cache_notify_resources(cluster)
-    end)
+    generate_config_and_notify_streams(state)
 
     # if we get this far, let's do an initial snapshot of the
     # potentially changed data.
@@ -101,7 +72,7 @@ defmodule ExControlPlane.ConfigCache do
     {:noreply, state}
   end
 
-  def handle_call({:load_events, cluster, events}, _from, state) do
+  def handle_call({:load_events, cluster, events, sync_wait_timeout}, _from, state) do
     {_, changed_apis} =
       Enum.reject(events, fn {event, _api_id} -> event == :deleted end)
       |> Enum.unzip()
@@ -110,7 +81,19 @@ defmodule ExControlPlane.ConfigCache do
     |> generate_config(cluster, changed_apis)
     |> cache_notify_resources(cluster)
 
-    {:reply, :ok, state}
+    result =
+      Task.async(fn -> wait_for_synchronicity(cluster, sync_wait_timeout) end)
+      |> Task.await(:infinity)
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, :no_sync_state_reached} ->
+        generate_config_and_notify_streams(state)
+    end
+
+    {:reply, result, state}
   end
 
   def handle_call(req, _from, state) do
@@ -163,12 +146,10 @@ defmodule ExControlPlane.ConfigCache do
 
     Enum.each(resources, fn {type, resources_for_type} ->
       :ets.insert(
-        @resources_table,
+        @resources_candidates_table,
         {{cluster, type}, resources_for_type}
       )
     end)
-
-    :ok = create_snapshot()
 
     Enum.each(resources, fn {type, resources_for_type} ->
       hash = checksum(resources_for_type)
@@ -193,7 +174,7 @@ defmodule ExControlPlane.ConfigCache do
         acc
       end,
       [],
-      @resources_table
+      @resources_candidates_table
     )
   end
 
@@ -203,12 +184,22 @@ defmodule ExControlPlane.ConfigCache do
   end
 
   defp create_snapshot do
-    res = :ets.tab2list(@resources_table)
+    res =
+      :ets.foldl(
+        fn object, acc ->
+          :ets.insert(@resources_table, object)
+          [object | acc]
+        end,
+        [],
+        @resources_candidates_table
+      )
+
     Snapshot.put(res)
   end
 
   def get_resources(cluster, type_url) do
-    case {:ets.whereis(@resources_table), :ets.lookup(@resources_table, {cluster, type_url})} do
+    case {:ets.whereis(@resources_candidates_table),
+          :ets.lookup(@resources_candidates_table, {cluster, type_url})} do
       {:undefined, _} -> []
       {_, []} -> []
       {_, [{_, resources}]} -> resources
@@ -219,5 +210,53 @@ defmodule ExControlPlane.ConfigCache do
     seconds = trunc(milliseconds / 1000)
     milliseconds = rem(milliseconds, 1000)
     "#{seconds}.#{milliseconds}s"
+  end
+
+  @sync_wait_step 100
+  defp wait_for_synchronicity(cluster, sync_wait_timeout) do
+    wait_until_in_sync(cluster, Integer.floor_div(sync_wait_timeout, @sync_wait_step))
+  end
+
+  defp wait_until_in_sync(_cluster, 0) do
+    {:error, :no_sync_state_reached}
+  end
+
+  defp wait_until_in_sync(cluster, n) do
+    if ExControlPlane.Stream.in_sync(cluster) do
+      :ok = create_snapshot()
+      :ok
+    else
+      Process.sleep(@sync_wait_step)
+      wait_until_in_sync(cluster, n - 1)
+    end
+  end
+
+  defp generate_config_and_notify_streams(state) do
+    {res, _} =
+      state.adapter_mod.map_reduce(
+        state.adapter_state,
+        fn %ExControlPlane.Adapter.ApiConfig{
+             cluster: cluster,
+             api_id: api_id
+           },
+           acc ->
+          Logger.info(
+            cluster: cluster,
+            api_id: api_id,
+            message: "API config init from last good state"
+          )
+
+          {{cluster, api_id}, acc}
+        end,
+        # acc
+        []
+      )
+
+    Enum.group_by(res, fn {cluster, _} -> cluster end, fn {_, api_id} -> api_id end)
+    |> Enum.each(fn {cluster, api_ids} ->
+      state
+      |> generate_config(cluster, api_ids)
+      |> cache_notify_resources(cluster)
+    end)
   end
 end
