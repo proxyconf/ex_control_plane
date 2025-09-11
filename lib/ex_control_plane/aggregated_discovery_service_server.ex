@@ -45,7 +45,7 @@ defmodule ExControlPlane.AggregatedDiscoveryServiceServer do
         end
       end
 
-    ExControlPlane.Stream.event(stream, node_info, type_url, version)
+    ExControlPlane.Stream.event(stream, node_info, type_url, {version, error})
   end
 
   defp node_info(%DiscoveryRequest{node: %Node{id: node_id, cluster: cluster}}) do
