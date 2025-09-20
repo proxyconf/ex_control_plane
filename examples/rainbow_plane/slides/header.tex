@@ -1,0 +1,10 @@
+\usetheme[background=dark]{metropolis}
+\usepackage{tikz}
+\definecolor{elixirpurple}{RGB}{103,68,161}
+\usebackgroundtemplate{%
+  \begin{tikzpicture}[remember picture, overlay]
+    \shade[bottom color=elixirpurple!60, top color=black!90]
+      (current page.south west) rectangle (current page.north east);
+  \end{tikzpicture}%
+}
+\setbeamerfont{footnote}{size=\tiny}

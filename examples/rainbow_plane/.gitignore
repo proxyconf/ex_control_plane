@@ -20,11 +20,7 @@ erl_crash.dump
 *.ez
 
 # Ignore package tarball (built via "mix hex.build").
-ex_control_plane-*.tar
+rainbow_plane-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
-
-.direnv
-
-.nix-mix
