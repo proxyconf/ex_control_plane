@@ -85,14 +85,6 @@ defmodule ExControlPlane.ConfigCache do
       Task.async(fn -> wait_for_synchronicity(cluster, sync_wait_timeout) end)
       |> Task.await(:infinity)
 
-    case result do
-      :ok ->
-        :ok
-
-      {:error, :no_sync_state_reached} ->
-        generate_config_and_notify_streams(state)
-    end
-
     {:reply, result, state}
   end
 
