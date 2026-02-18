@@ -117,7 +117,7 @@ defmodule ExControlPlane.Snapshot.Snapshot do
     {:reply, res, state}
   end
 
-  def handle_call(:force_persist, _from, state) do
+  def handle_call(:force_persist, _from, %Snapshot{} = state) do
     checksum = maybe_persist(state)
     {:reply, :ok, %Snapshot{state | checksum: checksum}}
   end
