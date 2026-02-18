@@ -1,16 +1,40 @@
 defmodule ExControlPlane.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @source_url "https://github.com/proxyconf/ex_control_plane"
+
   def project do
     [
       app: :ex_control_plane,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      elixirc_paths: elixirc_paths(Mix.env()),
+
+      # Test coverage
+      test_coverage: [summary: [threshold: 70]],
+
+      # Dialyzer
+      dialyzer: [
+        plt_local_path: "priv/plts/project.plt",
+        plt_core_path: "priv/plts/core.plt"
+      ],
+
+      # Hex.pm package
+      name: "ExControlPlane",
+      description: "Elixir implementation of an Envoy xDS Control Plane with ADS support",
+      source_url: @source_url,
+      homepage_url: "https://proxyconf.com/docs/ex-control-plane/",
+      package: package(),
+      docs: docs()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   defp aliases() do
     [
@@ -26,6 +50,26 @@ defmodule ExControlPlane.MixProject do
     ]
   end
 
+  defp package do
+    [
+      licenses: ["MPL-2.0"],
+      links: %{
+        "GitHub" => @source_url
+      },
+      maintainers: ["ProxyConf Team"],
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE)
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_url: @source_url,
+      source_ref: "v#{@version}",
+      extras: ["README.md"]
+    ]
+  end
+
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
@@ -33,9 +77,13 @@ defmodule ExControlPlane.MixProject do
       {:ex_aws, "~> 2.0"},
       {:ex_aws_s3, "~> 2.5"},
       {:envoy_xds, git: "https://github.com/proxyconf/envoy_xds_ex.git"},
-      {:deep_merge, "~> 1.0"}
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      {:deep_merge, "~> 1.0"},
+
+      # Dev/Test dependencies
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+      {:finch, "~> 0.18", only: :test},
+      {:jason, "~> 1.4", only: :test}
     ]
   end
 end

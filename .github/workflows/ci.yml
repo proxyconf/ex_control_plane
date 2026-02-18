@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  MIX_ENV: test
+
+jobs:
+  test:
+    name: Test (Elixir ${{ matrix.elixir }} / Envoy ${{ matrix.envoy }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Elixir stable (1.19) and stable-1 (1.18)
+        elixir: ["1.19", "1.18"]
+        # Envoy stable (1.37) and stable-1 (1.36)
+        envoy: ["1.37.0", "1.36.4"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: "26"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        id: cache-deps
+        with:
+          path: |
+            deps
+            _build
+          key: deps-${{ runner.os }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ matrix.elixir }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Install Envoy
+        run: |
+          ENVOY_VERSION="${{ matrix.envoy }}"
+          curl -sL "https://github.com/envoyproxy/envoy/releases/download/v${ENVOY_VERSION}/envoy-${ENVOY_VERSION}-linux-x86_64" -o /tmp/envoy
+          chmod +x /tmp/envoy
+          sudo mv /tmp/envoy /usr/local/bin/envoy
+          envoy --version
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+
+      - name: Run tests with coverage
+        run: mix test --cover
+
+  dialyzer:
+    name: Dialyzer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19"
+          otp-version: "26"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: deps-${{ runner.os }}-1.19-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-1.19-
+
+      - name: Cache PLT
+        uses: actions/cache@v4
+        id: cache-plt
+        with:
+          path: priv/plts
+          key: plt-${{ runner.os }}-1.19-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            plt-${{ runner.os }}-1.19-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile
+
+      - name: Create PLTs directory
+        run: mkdir -p priv/plts
+
+      - name: Run Dialyzer
+        run: mix dialyzer
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19"
+          otp-version: "26"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: deps-${{ runner.os }}-1.19-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            deps-${{ runner.os }}-1.19-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Generate documentation
+        run: mix docs
+        env:
+          MIX_ENV: dev
