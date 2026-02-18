@@ -78,12 +78,12 @@ defmodule ExControlPlane.MixProject do
       {:ex_aws_s3, "~> 2.5"},
       {:envoy_xds, git: "https://github.com/proxyconf/envoy_xds_ex.git"},
       {:deep_merge, "~> 1.0"},
+      {:jason, "~> 1.4"},
 
       # Dev/Test dependencies
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
-      {:finch, "~> 0.18", only: :test},
-      {:jason, "~> 1.4", only: :test}
+      {:finch, "~> 0.18", only: :test}
     ]
   end
 end
