@@ -76,6 +76,10 @@ defmodule ExControlPlane.MixProject do
       {:telemetry, "~> 1.3"},
       {:ex_aws, "~> 2.0"},
       {:ex_aws_s3, "~> 2.5"},
+      # grpc 1.0.0 split the umbrella; the server implementation now lives in
+      # the grpc_server package (provides GRPC.Server, GRPC.Endpoint,
+      # GRPC.Server.Interceptors.Logger, GRPC.Server.Stream).
+      {:grpc_server, "~> 1.0"},
       {:envoy_xds, git: "https://github.com/proxyconf/envoy_xds_ex.git"},
       {:deep_merge, "~> 1.0"},
       {:jason, "~> 1.4"},
