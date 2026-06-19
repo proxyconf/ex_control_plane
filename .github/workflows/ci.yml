@@ -19,8 +19,8 @@ jobs:
       matrix:
         # Elixir stable (1.19) and stable-1 (1.18)
         elixir: ["1.19", "1.18"]
-        # Envoy stable (1.37) and stable-1 (1.36)
-        envoy: ["1.37.0", "1.36.4"]
+        # Envoy stable (1.38) and the two prior minors (1.37, 1.36)
+        envoy: ["1.38.2", "1.37.0", "1.36.4"]
 
     steps:
       - name: Checkout code
