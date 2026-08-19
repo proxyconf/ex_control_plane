@@ -74,6 +74,11 @@ defmodule ExControlPlane.StreamRobustnessTest do
 
   defp initial_request, do: %{version_info: "", nonce: "", error: nil}
 
+  defp stream_children do
+    DynamicSupervisor.which_children(ExControlPlane.StreamSupervisor)
+    |> Enum.map(fn {_, pid, _, _} -> pid end)
+  end
+
   # `push_resource_changes/3` replies as soon as the stream has marked itself out
   # of sync; the write to the GRPC stream happens in a continue afterwards. A
   # synchronous call to each stream lands after that continue, so this is what
@@ -226,7 +231,9 @@ defmodule ExControlPlane.StreamRobustnessTest do
       assert Registry.lookup(ExControlPlane.StreamRegistry, {grpc_stream, cluster, @cluster_type}) ==
                []
 
-      assert %{active: 0} = DynamicSupervisor.count_children(ExControlPlane.StreamSupervisor)
+      # Scoped to the stream this test owns - the supervisor is global and holds
+      # whatever else is connected to the control plane at the time.
+      refute pid in stream_children()
     end
 
     test "an unexpected message or call does not take a stream down" do
