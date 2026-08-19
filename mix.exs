@@ -1,7 +1,7 @@
 defmodule ExControlPlane.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/proxyconf/ex_control_plane"
 
   def project do
@@ -57,7 +57,7 @@ defmodule ExControlPlane.MixProject do
         "GitHub" => @source_url
       },
       maintainers: ["ProxyConf Team"],
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE)
+      files: ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
@@ -66,7 +66,7 @@ defmodule ExControlPlane.MixProject do
       main: "readme",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md"]
+      extras: ["README.md", "CHANGELOG.md"]
     ]
   end
 
