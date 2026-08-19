@@ -15,11 +15,6 @@ defmodule ExControlPlane.StreamTest do
   end
 
   test "grpc stream is terminated" do
-    assert 0 == Registry.count(ExControlPlane.StreamRegistry)
-
-    assert %{active: 0, workers: 0, supervisors: 0, specs: 0} ==
-             DynamicSupervisor.count_children(ExControlPlane.StreamSupervisor)
-
     # start a mock GRPC stream
     {:ok, grpc_stream_pid} =
       DynamicSupervisor.start_child(ExControlPlane.DynamicTestSupervisor, {MockGRPCStream, []})
@@ -30,10 +25,9 @@ defmodule ExControlPlane.StreamTest do
 
     {:ok, stream_pid} = ExControlPlane.Stream.ensure_registred(grpc_stream, node_info, type_url)
 
-    assert 1 == Registry.count(ExControlPlane.StreamRegistry)
-
-    assert %{active: 1, workers: 1, supervisors: 0, specs: 1} ==
-             DynamicSupervisor.count_children(ExControlPlane.StreamSupervisor)
+    key = {grpc_stream, node_info.cluster, type_url}
+    assert [{^stream_pid, _}] = Registry.lookup(ExControlPlane.StreamRegistry, key)
+    assert stream_pid in stream_children()
 
     # kill grpc stream
     true = Process.exit(grpc_stream_pid, :kill)
@@ -42,19 +36,13 @@ defmodule ExControlPlane.StreamTest do
     assert wait(fn -> not Process.alive?(stream_pid) end, 1000)
 
     # and be removed from dynamic supervisor
-    assert %{active: 0, workers: 0, supervisors: 0, specs: 0} ==
-             DynamicSupervisor.count_children(ExControlPlane.StreamSupervisor)
+    assert wait(fn -> stream_pid not in stream_children() end, 1000)
 
     # and not longer register in StreamRegistry
-    assert 0 == Registry.count(ExControlPlane.StreamRegistry)
+    assert wait(fn -> Registry.lookup(ExControlPlane.StreamRegistry, key) == [] end, 1000)
   end
 
   test "two concurrent GRPC Streams and terminating one of them" do
-    assert 0 == Registry.count(ExControlPlane.StreamRegistry)
-
-    assert %{active: 0, workers: 0, supervisors: 0, specs: 0} ==
-             DynamicSupervisor.count_children(ExControlPlane.StreamSupervisor)
-
     # start two mock GRPC Streams
     {:ok, grpc_stream_pid} =
       DynamicSupervisor.start_child(ExControlPlane.DynamicTestSupervisor, {MockGRPCStream, []})
@@ -74,18 +62,11 @@ defmodule ExControlPlane.StreamTest do
       ExControlPlane.Stream.ensure_registred(grpc_stream2, node_info, type_url)
 
     # two Streams should be registered and running
-    assert 2 == Registry.count(ExControlPlane.StreamRegistry)
-
-    assert %{active: 2, workers: 2, supervisors: 0, specs: 2} ==
-             DynamicSupervisor.count_children(ExControlPlane.StreamSupervisor)
-
     stream_pid_list = [stream_pid, stream_pid2] |> Enum.sort()
 
-    assert [
-             {_, ^stream_pid, :worker, [ExControlPlane.Stream]},
-             {_, ^stream_pid2, :worker, [ExControlPlane.Stream]}
-           ] =
-             DynamicSupervisor.which_children(ExControlPlane.StreamSupervisor)
+    children = stream_children()
+    assert stream_pid in children
+    assert stream_pid2 in children
 
     assert stream_pid_list ==
              Registry.select(ExControlPlane.StreamRegistry, [
@@ -102,13 +83,9 @@ defmodule ExControlPlane.StreamTest do
 
     # and deregister/be removed from dynamic supervisor
     # the second GRPC Stream should still be there
-    assert %{active: 1, workers: 1, supervisors: 0, specs: 1} ==
-             DynamicSupervisor.count_children(ExControlPlane.StreamSupervisor)
-
-    assert 1 == Registry.count(ExControlPlane.StreamRegistry)
-
-    assert [{_, ^stream_pid2, :worker, [ExControlPlane.Stream]}] =
-             DynamicSupervisor.which_children(ExControlPlane.StreamSupervisor)
+    assert wait(fn -> stream_pid not in stream_children() end, 1000)
+    assert Process.alive?(stream_pid2)
+    assert stream_pid2 in stream_children()
 
     # registry has been updated and contains only the new PID
     assert [^stream_pid2] =
@@ -118,7 +95,16 @@ defmodule ExControlPlane.StreamTest do
              ])
   end
 
-  defp wait(f, until) when until > 0 do
+  # Scoped to the streams a test owns: the supervisor and the registry are global
+  # and anything that connects to the control plane shows up there too.
+  defp stream_children do
+    DynamicSupervisor.which_children(ExControlPlane.StreamSupervisor)
+    |> Enum.map(fn {_, pid, _, _} -> pid end)
+  end
+
+  defp wait(_f, until) when until <= 0, do: false
+
+  defp wait(f, until) do
     if f.() do
       :ok
     else

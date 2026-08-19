@@ -105,17 +105,21 @@ defmodule ExControlPlane.EnvoyHelper do
   Stops an Envoy process.
   """
   def stop_envoy(%__MODULE__{port: port}) when is_port(port) do
-    # Get the OS PID of the port
+    # An Envoy that outlives its test keeps retrying against the control plane's
+    # GRPC port and shows up as unexpected streams in later tests, so the kill
+    # has to be confirmed rather than assumed.
     case Port.info(port, :os_pid) do
       {:os_pid, os_pid} ->
-        # Send SIGTERM to Envoy
-        System.cmd("kill", ["-TERM", "#{os_pid}"], stderr_to_stdout: true)
+        _ = System.cmd("kill", ["-TERM", "#{os_pid}"], stderr_to_stdout: true)
 
-        # Wait a bit for graceful shutdown
-        Process.sleep(500)
+        # drain-time-s 1 + parent-shutdown-time-s 2 bounds the graceful path
+        unless await_os_exit(os_pid, 4_000) do
+          _ = System.cmd("kill", ["-9", "#{os_pid}"], stderr_to_stdout: true)
 
-        # Force kill if still running
-        System.cmd("kill", ["-9", "#{os_pid}"], stderr_to_stdout: true)
+          unless await_os_exit(os_pid, 2_000) do
+            Logger.error("Envoy process #{os_pid} survived SIGKILL")
+          end
+        end
 
       nil ->
         :ok
@@ -129,6 +133,21 @@ defmodule ExControlPlane.EnvoyHelper do
     end
 
     :ok
+  end
+
+  @exit_poll_interval 50
+
+  defp await_os_exit(_os_pid, remaining) when remaining <= 0, do: false
+
+  defp await_os_exit(os_pid, remaining) do
+    case System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true) do
+      {_, 0} ->
+        Process.sleep(@exit_poll_interval)
+        await_os_exit(os_pid, remaining - @exit_poll_interval)
+
+      _ ->
+        true
+    end
   end
 
   def stop_envoy(_), do: :ok
