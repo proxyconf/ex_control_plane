@@ -8,12 +8,13 @@ defmodule ExControlPlane.AggregatedDiscoveryServiceServerTest do
 
   import ExUnit.CaptureLog
 
-  # We test the server by calling its stream handler with mock requests
-  # Since it's tightly coupled to the GRPC stream, we'll test the request handling logic
+  @moduletag capture_log: true
+
+  @cluster_type "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+  @listener_type "type.googleapis.com/envoy.config.listener.v3.Listener"
 
   describe "stream_aggregated_resources/2" do
     setup do
-      # Start the application to have all required processes running
       {:ok, apps} = Application.ensure_all_started(:ex_control_plane)
 
       on_exit(fn ->
@@ -27,167 +28,139 @@ defmodule ExControlPlane.AggregatedDiscoveryServiceServerTest do
       :ok
     end
 
-    test "handles discovery request with valid numeric version" do
-      # Create a mock stream that we can use
-      {:ok, stream_agent} = Agent.start_link(fn -> [] end)
-
-      node = %Node{id: "test-node", cluster: "test-cluster"}
-
-      request = %DiscoveryRequest{
-        version_info: "42",
-        node: node,
-        type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+    defp request(opts) do
+      %DiscoveryRequest{
+        version_info: Keyword.get(opts, :version_info, ""),
+        response_nonce: Keyword.get(opts, :nonce, ""),
+        node: Keyword.get(opts, :node, %Node{id: "test-node", cluster: "test-cluster"}),
+        type_url: Keyword.get(opts, :type_url, @cluster_type),
         resource_names: [],
-        error_detail: nil
+        error_detail: Keyword.get(opts, :error, nil)
       }
+    end
 
-      # The stream_aggregated_resources expects an enumerable of requests
-      # We wrap it in a try since it will try to register with the stream supervisor
-      try do
-        AggregatedDiscoveryServiceServer.stream_aggregated_resources(
-          [request],
-          stream_agent
-        )
-      rescue
-        # Expected - the mock stream doesn't fully implement GRPC stream
-        _ -> :ok
-      catch
-        :exit, _ -> :ok
-      end
+    # A broken stream must degrade to an error, never take the handler down: an
+    # exception here would tear down the node's whole ADS session.
+    defp mock_stream do
+      {:ok, agent} = Agent.start_link(fn -> [] end)
+      on_exit(fn -> if Process.alive?(agent), do: Agent.stop(agent) end)
+      agent
+    end
 
-      Agent.stop(stream_agent)
+    test "an unusable stream does not raise out of the handler" do
+      stream = mock_stream()
+
+      assert :ok =
+               AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+                 [request(version_info: "42")],
+                 stream
+               )
     end
 
     test "handles discovery request with empty version (first timer)" do
-      {:ok, stream_agent} = Agent.start_link(fn -> [] end)
+      stream = mock_stream()
 
-      node = %Node{id: "first-time-node", cluster: "test-cluster"}
-
-      request = %DiscoveryRequest{
-        version_info: "",
-        node: node,
-        type_url: "type.googleapis.com/envoy.config.listener.v3.Listener",
-        resource_names: [],
-        error_detail: nil
-      }
-
-      try do
-        AggregatedDiscoveryServiceServer.stream_aggregated_resources(
-          [request],
-          stream_agent
-        )
-      rescue
-        _ -> :ok
-      catch
-        :exit, _ -> :ok
-      end
-
-      Agent.stop(stream_agent)
+      assert :ok =
+               AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+                 [request(version_info: "", type_url: @listener_type)],
+                 stream
+               )
     end
 
-    test "logs warning for invalid non-numeric version" do
-      {:ok, stream_agent} = Agent.start_link(fn -> [] end)
-
-      node = %Node{id: "bad-version-node", cluster: "test-cluster"}
-
-      request = %DiscoveryRequest{
-        version_info: "invalid-version",
-        node: node,
-        type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-        resource_names: [],
-        error_detail: nil
-      }
+    test "accepts an opaque non-numeric version" do
+      stream = mock_stream()
 
       log =
         capture_log(fn ->
-          try do
-            AggregatedDiscoveryServiceServer.stream_aggregated_resources(
-              [request],
-              stream_agent
-            )
-          rescue
-            _ -> :ok
-          catch
-            :exit, _ -> :ok
-          end
+          AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+            [request(version_info: "invalid-version")],
+            stream
+          )
         end)
 
-      # Should log a warning about invalid version
-      assert log =~ "Invalid ADS discovery request version" or log == ""
+      # version_info is opaque to the node, the server must not try to parse it
+      refute log =~ "Invalid ADS discovery request version"
+    end
 
-      Agent.stop(stream_agent)
+    test "handles version with trailing characters" do
+      stream = mock_stream()
+
+      log =
+        capture_log(fn ->
+          AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+            [request(version_info: "42abc")],
+            stream
+          )
+        end)
+
+      refute log =~ "Invalid ADS discovery request version"
     end
 
     test "logs error when error_detail is present" do
-      {:ok, stream_agent} = Agent.start_link(fn -> [] end)
-
-      node = %Node{id: "error-node", cluster: "test-cluster"}
-
-      error_detail = %Status{
-        code: 2,
-        message: "Configuration rejected"
-      }
-
-      request = %DiscoveryRequest{
-        version_info: "10",
-        node: node,
-        type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-        resource_names: [],
-        error_detail: error_detail
-      }
+      stream = mock_stream()
 
       log =
         capture_log(fn ->
-          try do
-            AggregatedDiscoveryServiceServer.stream_aggregated_resources(
-              [request],
-              stream_agent
-            )
-          rescue
-            _ -> :ok
-          catch
-            :exit, _ -> :ok
-          end
+          AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+            [request(version_info: "10", nonce: "n1", error: %Status{code: 2, message: "nope"})],
+            stream
+          )
         end)
 
-      # Should log error about the error_detail
-      assert log =~ "ADS discovery request error" or log == ""
-
-      Agent.stop(stream_agent)
+      assert log =~ "ADS discovery request error"
     end
 
-    test "handles version with trailing characters (resets to 0)" do
-      {:ok, stream_agent} = Agent.start_link(fn -> [] end)
-
-      node = %Node{id: "trailing-version-node", cluster: "test-cluster"}
-
-      # Version like "42abc" should be considered invalid
-      request = %DiscoveryRequest{
-        version_info: "42abc",
-        node: node,
-        type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-        resource_names: [],
-        error_detail: nil
-      }
+    test "node identity carries over to requests that omit it" do
+      stream = mock_stream()
 
       log =
         capture_log(fn ->
-          try do
-            AggregatedDiscoveryServiceServer.stream_aggregated_resources(
-              [request],
-              stream_agent
-            )
-          rescue
-            _ -> :ok
-          catch
-            :exit, _ -> :ok
-          end
+          AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+            [
+              request(type_url: @cluster_type),
+              # xDS only requires the node on the first request of a stream
+              request(type_url: @listener_type, node: nil)
+            ],
+            stream
+          )
         end)
 
-      # Should log warning about invalid version
-      assert log =~ "Invalid ADS discovery request version" or log == ""
+      refute log =~ "without node identification"
+      assert log =~ @listener_type
+    end
 
-      Agent.stop(stream_agent)
+    test "a request without any node identity is dropped, not fatal" do
+      stream = mock_stream()
+
+      log =
+        capture_log(fn ->
+          assert :ok =
+                   AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+                     [request(node: nil)],
+                     stream
+                   )
+        end)
+
+      assert log =~ "without node identification"
+    end
+
+    test "one broken request does not stop the rest of the stream" do
+      stream = mock_stream()
+
+      log =
+        capture_log(fn ->
+          assert :ok =
+                   AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+                     [
+                       request(node: nil),
+                       request(type_url: @listener_type)
+                     ],
+                     stream
+                   )
+        end)
+
+      assert log =~ "without node identification"
+      assert log =~ @listener_type
     end
   end
 end

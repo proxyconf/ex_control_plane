@@ -42,11 +42,28 @@ defmodule ExControlPlane.ConfigCache do
      %{
        adapter_mod: adapter_mod,
        adapter_state: adapter_mod.init(),
-       streams: %{}
+       streams: %{},
+       # monitor ref => caller waiting for a synchronicity result
+       waiters: %{}
      }, {:continue, :bootstrap}}
   end
 
   def handle_continue(:bootstrap, state) do
+    load_snapshot()
+
+    generate_config_and_notify_streams(state)
+
+    # if we get this far, let's do an initial snapshot of the
+    # potentially changed data.
+    create_snapshot()
+
+    {:noreply, state}
+  end
+
+  # A snapshot is a best-effort optimisation for a cold start. Whatever is wrong
+  # with it, the control plane still has to come up and regenerate from the
+  # adapter - crashing here would put the whole application in a restart loop.
+  defp load_snapshot do
     case Snapshot.get() do
       {:ok, data} ->
         Enum.each(data, fn e ->
@@ -62,35 +79,61 @@ defmodule ExControlPlane.ConfigCache do
 
         :ok
     end
-
-    generate_config_and_notify_streams(state)
-
-    # if we get this far, let's do an initial snapshot of the
-    # potentially changed data.
-    create_snapshot()
-
-    {:noreply, state}
+  rescue
+    error ->
+      Logger.error("Discarding unusable snapshot: #{inspect(error)}")
+      :error
+  catch
+    kind, reason ->
+      Logger.error("Discarding unusable snapshot: #{inspect(kind)} #{inspect(reason)}")
+      :error
   end
 
-  def handle_call({:load_events, cluster, events, sync_wait_timeout}, _from, state) do
+  def handle_call({:load_events, cluster, events, sync_wait_timeout}, from, state) do
     {_, changed_apis} =
       Enum.reject(events, fn {event, _api_id} -> event == :deleted end)
       |> Enum.unzip()
 
-    state
-    |> generate_config(cluster, changed_apis)
-    |> cache_notify_resources(cluster)
+    case state
+         |> generate_config(cluster, changed_apis)
+         |> cache_notify_resources(cluster) do
+      :ok ->
+        # Waiting for the nodes to acknowledge must not block this GenServer:
+        # config generation for other clusters has to keep making progress while
+        # a slow or disconnected dataplane is catching up.
+        {_pid, ref} =
+          spawn_monitor(fn ->
+            GenServer.reply(from, await_synchronicity(cluster, sync_wait_timeout))
+          end)
 
-    result =
-      Task.async(fn -> wait_for_synchronicity(cluster, sync_wait_timeout) end)
-      |> Task.await(:infinity)
+        {:noreply, put_in(state.waiters[ref], from)}
 
-    {:reply, result, state}
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(req, _from, state) do
     Logger.error("Unhandled Request #{inspect(req)}")
     {:reply, {:error, :unhandled_request}, state}
+  end
+
+  # A waiter that died without replying would leave its caller blocked forever,
+  # `load_events/4` waits with `:infinity` by default.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    {from, waiters} = Map.pop(state.waiters, ref)
+
+    if from && reason != :normal do
+      Logger.error("Synchronicity check crashed: #{inspect(reason)}")
+      GenServer.reply(from, {:error, :sync_check_failed})
+    end
+
+    {:noreply, %{state | waiters: waiters}}
+  end
+
+  def handle_info(message, state) do
+    Logger.debug("Unhandled message #{inspect(message)}")
+    {:noreply, state}
   end
 
   defp generate_config(state, cluster, changed_apis) do
@@ -118,9 +161,9 @@ defmodule ExControlPlane.ConfigCache do
 
       {:error, :failed_generating_configuration}
   catch
-    error ->
+    kind, reason ->
       Logger.error(
-        "Error generating configuration for cluster #{inspect(cluster)}: #{inspect(error)}"
+        "Error generating configuration for cluster #{inspect(cluster)}: #{inspect(kind)} #{inspect(reason)}"
       )
 
       {:error, :failed_generating_configuration}
@@ -152,10 +195,14 @@ defmodule ExControlPlane.ConfigCache do
     end)
   end
 
+  defp cache_notify_resources({:error, reason}, _cluster), do: {:error, reason}
+
   defp cache_notify_resources(_, cluster) do
     Logger.error(
       "Adapter generated invalid configuration for cluster #{inspect(cluster)} (not a %ClusterConfig{})"
     )
+
+    {:error, :invalid_cluster_config}
   end
 
   defp notify_resources do
@@ -170,7 +217,11 @@ defmodule ExControlPlane.ConfigCache do
     )
   end
 
-  defp checksum(data) do
+  @doc """
+  Checksum over a resource list. Used by both the notification path and
+  `ExControlPlane.Stream` to record what a stream has actually been sent.
+  """
+  def checksum(data) do
     binary = :erlang.term_to_binary(data, [:deterministic])
     :crypto.hash(:md5, binary)
   end
@@ -205,21 +256,42 @@ defmodule ExControlPlane.ConfigCache do
   end
 
   @sync_wait_step 100
-  defp wait_for_synchronicity(cluster, sync_wait_timeout) do
+
+  # Runs outside the GenServer, so it must always produce a reply - an
+  # unanswered caller would block on `load_events/4` forever.
+  defp await_synchronicity(cluster, sync_wait_timeout) do
     wait_until_in_sync(cluster, Integer.floor_div(sync_wait_timeout, @sync_wait_step))
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
-  defp wait_until_in_sync(_cluster, 0) do
+  defp wait_until_in_sync(_cluster, n) when n <= 0 do
     {:error, :no_sync_state_reached}
   end
 
   defp wait_until_in_sync(cluster, n) do
-    if ExControlPlane.Stream.in_sync(cluster) do
-      :ok = create_snapshot()
-      :ok
-    else
-      Process.sleep(@sync_wait_step)
-      wait_until_in_sync(cluster, n - 1)
+    case ExControlPlane.Stream.sync_status(cluster) do
+      :out_of_sync ->
+        Process.sleep(@sync_wait_step)
+        wait_until_in_sync(cluster, n - 1)
+
+      :in_sync ->
+        :ok = create_snapshot()
+        :ok
+
+      :no_connected_nodes ->
+        # Nothing can acknowledge the config. Treated as success so a control
+        # plane without a dataplane stays usable, but it is not evidence that
+        # the configuration is good.
+        Logger.warning(
+          cluster: cluster,
+          message: "No node connected, configuration was not acknowledged by any node"
+        )
+
+        :ok = create_snapshot()
+        :ok
     end
   end
 
@@ -246,9 +318,20 @@ defmodule ExControlPlane.ConfigCache do
 
     Enum.group_by(res, fn {cluster, _} -> cluster end, fn {_, api_id} -> api_id end)
     |> Enum.each(fn {cluster, api_ids} ->
-      state
-      |> generate_config(cluster, api_ids)
-      |> cache_notify_resources(cluster)
+      case state
+           |> generate_config(cluster, api_ids)
+           |> cache_notify_resources(cluster) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          # One broken cluster must not stop the remaining clusters from being
+          # restored on start-up.
+          Logger.error(
+            cluster: cluster,
+            message: "Bootstrapping configuration failed: #{inspect(reason)}"
+          )
+      end
     end)
   end
 end
