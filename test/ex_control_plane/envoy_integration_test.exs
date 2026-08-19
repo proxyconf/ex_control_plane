@@ -70,8 +70,11 @@ defmodule ExControlPlane.EnvoyIntegrationTest do
 
       # Wait for streams to be cleaned up before stopping applications
       # This prevents race conditions where streams from this test
-      # are still alive when the next test starts
-      # Note: gRPC streams may take up to 15 seconds to detect TCP disconnect
+      # are still alive when the next test starts.
+      # Note: detecting a gone peer is a transport concern and measured ~50s
+      # here, so this bound regularly expires and warns. That is deliberate -
+      # waiting it out costs more than two extra minutes of suite runtime, and
+      # `Application.stop/1` right after drops the registry anyway.
       wait_for_streams_cleaned_up(@cluster_id, 15_000)
 
       # Clear test adapter
