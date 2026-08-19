@@ -135,6 +135,8 @@ defmodule ExControlPlane.EnvoyHelper do
     :ok
   end
 
+  def stop_envoy(_), do: :ok
+
   @exit_poll_interval 50
 
   defp await_os_exit(_os_pid, remaining) when remaining <= 0, do: false
@@ -149,8 +151,6 @@ defmodule ExControlPlane.EnvoyHelper do
         true
     end
   end
-
-  def stop_envoy(_), do: :ok
 
   @doc """
   Waits for Envoy admin API to be available by polling.
