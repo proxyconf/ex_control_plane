@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mix test *)",
+      "Bash(mix compile *)",
+      "Bash(mix format --check-formatted)",
+      "Bash(MIX_ENV=test mix test *)",
+      "Bash(MIX_ENV=test mix compile *)",
+      "Bash(MIX_ENV=test mix format --check-formatted)"
+    ]
+  }
+}
