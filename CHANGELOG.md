@@ -6,6 +6,17 @@ Hardening release. The headline fix is that a reconnecting Envoy could crash its
 own ADS stream, but the same audit turned up a number of ways a single
 misbehaving node, adapter, or snapshot could take down more than itself.
 
+### Breaking
+
+- **`load_events/4` returns errors it used to hide.** Adapter failures were
+  reported as `:ok`; they now return `{:error, :failed_generating_configuration}`
+  or `{:error, :invalid_cluster_config}`, and a failed synchronicity check
+  returns `{:error, :sync_check_failed}`. Callers that only match
+  `:ok | {:error, :no_sync_state_reached}` will raise `CaseClauseError` - add a
+  catch-all `{:error, _}` clause before upgrading.
+- **`ExControlPlane.Stream.event/4`** takes a map instead of a tuple, see
+  *Changed*.
+
 ### Fixed
 
 - **A reconnecting node could tear down its ADS stream, repeatedly.**
