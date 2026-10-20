@@ -24,7 +24,7 @@ defmodule ExControlPlane.StreamRobustnessTest do
     def send_reply(_payload, _data, _opts), do: raise("connection reset")
   end
 
-  # Simulates a node that never drains its HTTP/2 window.
+  # Simulates a Stream GenServer that is stuck and never answers its callers.
   defmodule BlockingAdapter do
     def send_reply(_payload, _data, _opts) do
       Process.sleep(:infinity)

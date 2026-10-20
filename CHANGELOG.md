@@ -27,12 +27,12 @@ misbehaving node, adapter, or snapshot could take down more than itself.
   still reported success and wrote a snapshot. It now returns
   `{:error, :failed_generating_configuration}`, or
   `{:error, :invalid_cluster_config}` when the adapter returns a non-`ClusterConfig`.
-- **One slow or broken node could stall config distribution for everyone.**
-  Pushes ran serially inside the `ConfigCache` GenServer with a 5s call timeout,
-  and the write to the GRPC stream happened on that critical path. A dead pid or
-  a node stuck on HTTP/2 flow control crashed or blocked `ConfigCache`. Pushes
-  are now concurrent and fault-isolated, and each stream marks itself out of
-  sync, replies, and writes to its GRPC stream afterwards.
+- **One dead or stuck stream could crash or stall config distribution for
+  everyone.** Pushes ran serially inside the `ConfigCache` GenServer as plain
+  `GenServer.call`s. A stream that died between being looked up and being
+  called exited the call and took `ConfigCache` down with it; a stream that did
+  not answer held it up for 5s each. Pushes are now concurrent, bounded by
+  `:stream_push_timeout`, and a failing stream is logged and skipped.
 - **`load_events/4` blocked the `ConfigCache` GenServer** for the whole
   synchronicity wait, so unrelated clusters queued behind a lagging dataplane.
   The wait now runs outside the GenServer; a waiter that dies still replies.
@@ -75,9 +75,9 @@ misbehaving node, adapter, or snapshot could take down more than itself.
   reports `true` when nothing is connected.
 - `ExControlPlane.ConfigCache.checksum/1` is public, so a stream can record what
   it was actually sent using the same function the notification path uses.
-- Config options: `:stream_push_timeout` (default 10s) bounds a push to a single
-  stream; `:max_concurrent_streams` (default `:infinity`) bounds how many
-  discovery streams are accepted.
+- Config options: `:stream_push_timeout` (default 10s) bounds how long a caller
+  waits for a single stream process; `:max_concurrent_streams` (default
+  `:infinity`) bounds how many discovery streams are accepted.
 
 ### Known limitations
 

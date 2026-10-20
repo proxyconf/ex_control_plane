@@ -37,8 +37,10 @@ defmodule ExControlPlane.Stream do
   # putting crash storms on the supervisor's restart budget.
   @child_restart :temporary
 
-  # A push writes to the GRPC stream, which can block on HTTP/2 flow control when
-  # a node is slow to read. Bound it so one stuck node cannot stall the caller.
+  # Bounds how long a caller waits for a Stream GenServer. Writing to the GRPC
+  # stream is an asynchronous send to the Cowboy handler and cannot block here,
+  # but a Stream that is busy or gone must not stall `ConfigCache` or the node's
+  # ADS handler.
   @default_push_timeout 10_000
 
   def ensure_registred(grpc_stream, node_info, type_url) do
@@ -284,10 +286,9 @@ defmodule ExControlPlane.Stream do
 
       # Mark the stream out of sync *before* replying, so a caller that starts
       # polling `sync_status/1` right after cannot observe the previous
-      # acknowledgement and mistake it for this update being applied. The write
-      # to the GRPC stream itself happens in the continue, off the caller's
-      # critical path: it can block on HTTP/2 flow control and must not stall
-      # config distribution to other nodes.
+      # acknowledgement and mistake it for this update being applied. Fetching
+      # and encoding the resources happen in the continue, so the caller only
+      # waits for the status update.
       update_status(%{in_sync: false})
       {:reply, :ok, state, {:continue, :push_resources}}
     else

@@ -30,9 +30,10 @@ config :ex_control_plane,
   # Module implementing the ExControlPlane.Adapter behaviour
   adapter_mod: MyApp.Adapter,
 
-  # How long a single push to one discovery stream may take before it is given
-  # up on. The stream stays out of sync and retries on the next change, rather
-  # than holding up config distribution to the rest of the dataplane.
+  # How long a caller waits for a single stream process to accept a resource
+  # change or a discovery request. A stream that does not answer in time is
+  # skipped and stays out of sync, rather than holding up config distribution
+  # to the rest of the dataplane.
   stream_push_timeout: 10_000,
 
   # Upper bound on concurrently accepted discovery streams. Beyond it further
