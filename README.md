@@ -56,6 +56,8 @@ the dataplane to acknowledge it:
   (logged as a warning - it is not evidence the configuration is good)
 - `{:error, :no_sync_state_reached}` - at least one node did not acknowledge in
   time
+- `{:error, :sync_check_failed}` - waiting for the acknowledgement failed
+  unexpectedly (details are logged)
 - `{:error, :failed_generating_configuration}` - the adapter raised
 - `{:error, :invalid_cluster_config}` - the adapter did not return a
   `%ExControlPlane.Adapter.ClusterConfig{}`

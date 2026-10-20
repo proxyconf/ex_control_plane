@@ -304,10 +304,14 @@ defmodule ExControlPlane.ConfigCache do
   # unanswered caller would block on `load_events/4` forever.
   defp await_synchronicity(cluster, sync_wait_timeout) do
     wait_until_in_sync(cluster, Integer.floor_div(sync_wait_timeout, @sync_wait_step))
-  rescue
-    error -> {:error, error}
   catch
-    kind, reason -> {:error, {kind, reason}}
+    kind, reason ->
+      Logger.error(
+        cluster: cluster,
+        message: "Synchronicity check failed: #{Exception.format(kind, reason, __STACKTRACE__)}"
+      )
+
+      {:error, :sync_check_failed}
   end
 
   defp wait_until_in_sync(_cluster, n) when n <= 0 do
