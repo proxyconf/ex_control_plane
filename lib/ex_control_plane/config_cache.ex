@@ -43,8 +43,10 @@ defmodule ExControlPlane.ConfigCache do
        adapter_mod: adapter_mod,
        adapter_state: adapter_mod.init(),
        streams: %{},
-       # monitor ref => caller waiting for a synchronicity result
-       waiters: %{}
+       # waiter pid => {caller, cluster, generation} awaiting a synchronicity result
+       waiters: %{},
+       # cluster => generation of its latest candidate configuration
+       generations: %{}
      }, {:continue, :bootstrap}}
   end
 
@@ -98,15 +100,24 @@ defmodule ExControlPlane.ConfigCache do
          |> generate_config(cluster, changed_apis)
          |> cache_notify_resources(cluster) do
       :ok ->
+        generation = Map.get(state.generations, cluster, 0) + 1
+
         # Waiting for the nodes to acknowledge must not block this GenServer:
         # config generation for other clusters has to keep making progress while
         # a slow or disconnected dataplane is catching up.
-        {_pid, ref} =
+        cache = self()
+
+        {waiter, _ref} =
           spawn_monitor(fn ->
-            GenServer.reply(from, await_synchronicity(cluster, sync_wait_timeout))
+            send(cache, {:synchronicity, self(), await_synchronicity(cluster, sync_wait_timeout)})
           end)
 
-        {:noreply, put_in(state.waiters[ref], from)}
+        {:noreply,
+         %{
+           state
+           | waiters: Map.put(state.waiters, waiter, {from, cluster, generation}),
+             generations: Map.put(state.generations, cluster, generation)
+         }}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -118,17 +129,33 @@ defmodule ExControlPlane.ConfigCache do
     {:reply, {:error, :unhandled_request}, state}
   end
 
-  # A waiter that died without replying would leave its caller blocked forever,
-  # `load_events/4` waits with `:infinity` by default.
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    {from, waiters} = Map.pop(state.waiters, ref)
+  def handle_info({:synchronicity, waiter, result}, state) do
+    case Map.pop(state.waiters, waiter) do
+      {nil, _waiters} ->
+        Logger.error("Synchronicity result from unknown waiter #{inspect(waiter)}")
+        {:noreply, state}
 
-    if from && reason != :normal do
-      Logger.error("Synchronicity check crashed: #{inspect(reason)}")
-      GenServer.reply(from, {:error, :sync_check_failed})
+      {{from, cluster, generation}, waiters} ->
+        if result == :ok, do: promote_and_snapshot(state, cluster, generation)
+
+        GenServer.reply(from, result)
+        {:noreply, %{state | waiters: waiters}}
     end
+  end
 
-    {:noreply, %{state | waiters: waiters}}
+  # A waiter that died without replying would leave its caller blocked forever,
+  # `load_events/4` waits with `:infinity` by default. A waiter that did reply
+  # was already removed when its result arrived.
+  def handle_info({:DOWN, _ref, :process, waiter, reason}, state) do
+    case Map.pop(state.waiters, waiter) do
+      {nil, _waiters} ->
+        {:noreply, state}
+
+      {{from, _cluster, _generation}, waiters} ->
+        Logger.error("Synchronicity check crashed: #{inspect(reason)}")
+        GenServer.reply(from, {:error, :sync_check_failed})
+        {:noreply, %{state | waiters: waiters}}
+    end
   end
 
   def handle_info(message, state) do
@@ -240,6 +267,22 @@ defmodule ExControlPlane.ConfigCache do
     Snapshot.put(res)
   end
 
+  # The candidates table also holds configuration of other clusters that is
+  # still waiting for, or was refused by, its nodes - only the acknowledged
+  # cluster is promoted to the last good state. A newer `load_events/4` for the
+  # same cluster replaced the candidate after this one was acknowledged, so it is
+  # left to that call's own waiter.
+  defp promote_and_snapshot(state, cluster, generation) do
+    if Map.get(state.generations, cluster) == generation do
+      :ets.insert(
+        @resources_table,
+        :ets.match_object(@resources_candidates_table, {{cluster, :_}, :_})
+      )
+
+      Snapshot.put(:ets.tab2list(@resources_table))
+    end
+  end
+
   def get_resources(cluster, type_url) do
     case {:ets.whereis(@resources_candidates_table),
           :ets.lookup(@resources_candidates_table, {cluster, type_url})} do
@@ -257,7 +300,7 @@ defmodule ExControlPlane.ConfigCache do
 
   @sync_wait_step 100
 
-  # Runs outside the GenServer, so it must always produce a reply - an
+  # Runs outside the GenServer, so it must always produce a result - an
   # unanswered caller would block on `load_events/4` forever.
   defp await_synchronicity(cluster, sync_wait_timeout) do
     wait_until_in_sync(cluster, Integer.floor_div(sync_wait_timeout, @sync_wait_step))
@@ -278,7 +321,6 @@ defmodule ExControlPlane.ConfigCache do
         wait_until_in_sync(cluster, n - 1)
 
       :in_sync ->
-        :ok = create_snapshot()
         :ok
 
       :no_connected_nodes ->
@@ -290,7 +332,6 @@ defmodule ExControlPlane.ConfigCache do
           message: "No node connected, configuration was not acknowledged by any node"
         )
 
-        :ok = create_snapshot()
         :ok
     end
   end

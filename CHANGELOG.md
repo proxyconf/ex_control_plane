@@ -36,6 +36,11 @@ misbehaving node, adapter, or snapshot could take down more than itself.
 - **`load_events/4` blocked the `ConfigCache` GenServer** for the whole
   synchronicity wait, so unrelated clusters queued behind a lagging dataplane.
   The wait now runs outside the GenServer; a waiter that dies still replies.
+- **Snapshots could contain configuration no node had acknowledged.** Every
+  acknowledgement snapshotted the entire candidate table, including other
+  clusters' configuration that was still pending or had been refused. Only the
+  acknowledged cluster's configuration is promoted now, and only if no newer
+  `load_events/4` for that cluster superseded it in the meantime.
 - **A malformed resource killed the stream.** The `DiscoveryResponse` encode was
   an unguarded match. Encoding and send failures are now logged, leave version
   and hash unadvanced so the next notification retries, and keep the stream out
