@@ -26,6 +26,19 @@ defmodule ExControlPlane.ConfigCacheRobustnessTest do
     end
   end
 
+  # Distinguishable configuration per cluster, so a snapshot shows whose config
+  # it contains.
+  defmodule PerClusterAdapter do
+    def init, do: %{}
+    def map_reduce(_, _, acc), do: {[], acc}
+
+    def generate_resources(_state, cluster, _changes) do
+      %ExControlPlane.Adapter.ClusterConfig{
+        clusters: [%{"name" => "#{cluster}-c1", "connect_timeout" => "5s", "type" => "STATIC"}]
+      }
+    end
+  end
+
   defp start_with_adapter(adapter) do
     Application.put_env(:ex_control_plane, :adapter_mod, adapter)
     {:ok, apps} = Application.ensure_all_started(:ex_control_plane)
@@ -127,6 +140,51 @@ defmodule ExControlPlane.ConfigCacheRobustnessTest do
       )
 
     agent
+  end
+
+  describe "snapshot" do
+    @cluster_type "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+
+    defp snapshotted_clusters do
+      {:ok, snapshot} = ExControlPlane.Snapshot.Snapshot.get()
+      snapshot |> Enum.map(fn {{cluster, _type}, _resources} -> cluster end) |> Enum.uniq()
+    end
+
+    defp await_candidate(cluster, resources, attempts \\ 50) do
+      cond do
+        ConfigCache.get_resources(cluster, @cluster_type) == resources -> :ok
+        attempts == 0 -> flunk("#{cluster} never got its candidate configuration")
+        true -> Process.sleep(20) && await_candidate(cluster, resources, attempts - 1)
+      end
+    end
+
+    test "only persists configuration its own cluster acknowledged" do
+      start_with_adapter(PerClusterAdapter)
+
+      register_never_acking_stream("unacked-cluster")
+      pending = Task.async(fn -> ConfigCache.load_events("unacked-cluster", [], 1_000) end)
+
+      %{clusters: unacked} = PerClusterAdapter.generate_resources(%{}, "unacked-cluster", [])
+      await_candidate("unacked-cluster", unacked)
+
+      # Succeeds while "unacked-cluster" is still waiting for its nodes.
+      assert :ok = ConfigCache.load_events("acked-cluster", [], 1_000)
+
+      assert "acked-cluster" in snapshotted_clusters()
+      refute "unacked-cluster" in snapshotted_clusters()
+
+      assert {:error, :no_sync_state_reached} = Task.await(pending, 5_000)
+      refute "unacked-cluster" in snapshotted_clusters()
+    end
+
+    test "keeps the acknowledged configuration of other clusters" do
+      start_with_adapter(PerClusterAdapter)
+
+      assert :ok = ConfigCache.load_events("first-cluster", [], 1_000)
+      assert :ok = ConfigCache.load_events("second-cluster", [], 1_000)
+
+      assert Enum.sort(snapshotted_clusters()) == ["first-cluster", "second-cluster"]
+    end
   end
 
   test "load_events succeeds when no node is connected but says so" do

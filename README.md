@@ -60,6 +60,9 @@ the dataplane to acknowledge it:
 - `{:error, :invalid_cluster_config}` - the adapter did not return a
   `%ExControlPlane.Adapter.ClusterConfig{}`
 
+On `:ok` the cluster's configuration becomes part of the snapshot. Configuration
+that was not acknowledged, of this or any other cluster, is never snapshotted.
+
 Use `ExControlPlane.Stream.sync_status/1` to tell "in sync" and "nothing
 connected" apart:
 
