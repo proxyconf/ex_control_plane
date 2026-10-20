@@ -187,6 +187,20 @@ defmodule ExControlPlane.ConfigCacheRobustnessTest do
     end
   end
 
+  test "a failing synchronicity check is reported with a documented reason" do
+    start_with_adapter(SlowAdapter)
+
+    register_never_acking_stream("registry-gone")
+    waiting = Task.async(fn -> ConfigCache.load_events("registry-gone", [], 3_000) end)
+
+    # Give the call time to enter its sync wait, then pull the registry it polls
+    # from under it.
+    Process.sleep(200)
+    :ok = Supervisor.terminate_child(ExControlPlane.Supervisor, ExControlPlane.StreamRegistry)
+
+    assert {:error, :sync_check_failed} = Task.await(waiting, 5_000)
+  end
+
   test "load_events succeeds when no node is connected but says so" do
     start_with_adapter(SlowAdapter)
 
