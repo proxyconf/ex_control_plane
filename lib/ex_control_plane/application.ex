@@ -11,7 +11,13 @@ defmodule ExControlPlane.Application do
     children =
       [
         ExControlPlane.Snapshot.Supervisor,
-        DynamicSupervisor.child_spec(name: ExControlPlane.StreamSupervisor),
+        DynamicSupervisor.child_spec(
+          name: ExControlPlane.StreamSupervisor,
+          # Bounds how many concurrent discovery streams a control plane accepts.
+          # Beyond the limit further streams are rejected and logged instead of
+          # growing the process count without end.
+          max_children: Application.get_env(:ex_control_plane, :max_concurrent_streams, :infinity)
+        ),
         Registry.child_spec(keys: :unique, name: ExControlPlane.StreamRegistry),
         ExControlPlane.ConfigCache,
         {GRPC.Server.Supervisor,

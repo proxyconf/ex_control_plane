@@ -50,7 +50,7 @@ defmodule ExControlPlane.Snapshot.Snapshot do
        {:continue, :read}}
     else
       Logger.info("No snapshot backend configured. Snapshots are disabled.")
-      {:ok, :no_snapshot_config}
+      {:ok, :snapshots_disabled}
     end
   end
 
@@ -93,7 +93,7 @@ defmodule ExControlPlane.Snapshot.Snapshot do
     end
   end
 
-  defp check_version(_), do: "no version information found"
+  defp check_version(_), do: {:error, :no_version_information}
 
   defp verify_checksum(%{data: data, checksum: checksum}) do
     case checksum(data) do
@@ -102,11 +102,9 @@ defmodule ExControlPlane.Snapshot.Snapshot do
     end
   end
 
-  @impl true
-  def handle_call(_, _from, :snapshots_disabled) do
-    {:ok, {:error, :snapshots_disabled}, :snapshots_disabled}
-  end
+  defp verify_checksum(_), do: {:error, :no_checksum_information}
 
+  @impl true
   def handle_call(:get, _from, state) do
     res =
       case :ets.lookup(@snapshot_tbl, @snapshot_key) do
@@ -117,9 +115,18 @@ defmodule ExControlPlane.Snapshot.Snapshot do
     {:reply, res, state}
   end
 
+  def handle_call(_, _from, :snapshots_disabled) do
+    {:reply, {:error, :snapshots_disabled}, :snapshots_disabled}
+  end
+
   def handle_call(:force_persist, _from, %Snapshot{} = state) do
     checksum = maybe_persist(state)
     {:reply, :ok, %Snapshot{state | checksum: checksum}}
+  end
+
+  def handle_call(request, _from, state) do
+    Logger.error("Unhandled snapshot request #{inspect(request)}")
+    {:reply, {:error, :unhandled_request}, state}
   end
 
   @impl true
@@ -127,6 +134,11 @@ defmodule ExControlPlane.Snapshot.Snapshot do
     checksum = maybe_persist(state)
     _ = persist_after(interval)
     {:noreply, %Snapshot{state | checksum: checksum}}
+  end
+
+  def handle_info(message, state) do
+    Logger.debug("Unhandled snapshot message #{inspect(message)}")
+    {:noreply, state}
   end
 
   defp maybe_persist(%Snapshot{checksum: old_checksum, backend_mod: backend_mod}) do

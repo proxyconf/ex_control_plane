@@ -28,3 +28,6 @@ ex_control_plane-*.tar
 .direnv
 
 .nix-mix
+
+# Local Claude Code settings
+.claude/settings.local.json
