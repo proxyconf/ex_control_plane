@@ -36,9 +36,10 @@ config :ex_control_plane,
   # to the rest of the dataplane.
   stream_push_timeout: 10_000,
 
-  # Upper bound on concurrently accepted discovery streams. Beyond it further
-  # streams are rejected and logged instead of growing the process count
-  # without end.
+  # Upper bound on stream processes. There is one per resource type a node
+  # subscribes to (CDS, LDS, RDS, ...), not one per ADS connection - size it as
+  # nodes x resource types. A node that would exceed it has its ADS session
+  # ended with RESOURCE_EXHAUSTED and reconnects with backoff.
   max_concurrent_streams: :infinity,
 
   # Optional snapshot backend used to bootstrap on a cold start

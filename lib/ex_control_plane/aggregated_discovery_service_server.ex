@@ -37,13 +37,22 @@ defmodule ExControlPlane.AggregatedDiscoveryServiceServer do
         # `version_info` is opaque to the node and survives reconnects, it is
         # forwarded for logging only. The `response_nonce` decides whether this
         # is an initial request, an ACK, or a NACK.
-        ExControlPlane.Stream.event(stream, node_info, type_url, %{
-          version_info: version,
-          nonce: nonce,
-          error: error
-        })
+        case ExControlPlane.Stream.event(stream, node_info, type_url, %{
+               version_info: version,
+               nonce: nonce,
+               error: error
+             }) do
+          {:error, :max_children} ->
+            # Dropping the request would leave the node without this resource
+            # type until it happens to reconnect. Ending the session makes it
+            # reconnect with backoff, possibly to another control plane instance.
+            raise GRPC.RPCError,
+              status: :resource_exhausted,
+              message: "Stream limit reached, cannot serve #{type_url}"
 
-        node_info
+          _ ->
+            node_info
+        end
 
       :error ->
         # Nothing identifies the node, so the request cannot be routed to a

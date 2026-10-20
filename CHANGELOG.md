@@ -82,7 +82,9 @@ misbehaving node, adapter, or snapshot could take down more than itself.
   it was actually sent using the same function the notification path uses.
 - Config options: `:stream_push_timeout` (default 10s) bounds how long a caller
   waits for a single stream process; `:max_concurrent_streams` (default
-  `:infinity`) bounds how many discovery streams are accepted.
+  `:infinity`) bounds the number of stream processes - one per resource type per
+  node. A node exceeding it has its ADS session ended with `RESOURCE_EXHAUSTED`,
+  so it reconnects instead of running with some resource types missing.
 
 ### Known limitations
 

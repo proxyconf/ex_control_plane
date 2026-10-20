@@ -163,4 +163,82 @@ defmodule ExControlPlane.AggregatedDiscoveryServiceServerTest do
       assert log =~ @listener_type
     end
   end
+
+  describe "stream limit" do
+    @route_type "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+
+    defmodule FakeCodec do
+      def encode(msg), do: msg
+    end
+
+    defmodule FakeAdapter do
+      def send_reply(_payload, _data, _opts), do: :ok
+    end
+
+    # Every resource type of a node is served by its own Stream process, so a
+    # limit of 2 admits two resource types in total.
+    setup do
+      Application.put_env(:ex_control_plane, :max_concurrent_streams, 2)
+      {:ok, apps} = Application.ensure_all_started(:ex_control_plane)
+
+      on_exit(fn ->
+        Enum.reverse(apps)
+        |> Enum.each(fn app ->
+          Application.stop(app)
+          Application.unload(app)
+        end)
+
+        Application.delete_env(:ex_control_plane, :max_concurrent_streams)
+      end)
+
+      :ok
+    end
+
+    defp grpc_stream do
+      %{
+        codec: FakeCodec,
+        adapter: FakeAdapter,
+        access_mode: :normal,
+        payload: %{pid: mock_stream()}
+      }
+    end
+
+    test "accepts resource types up to the limit" do
+      assert :ok =
+               AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+                 [request(type_url: @cluster_type), request(type_url: @listener_type)],
+                 grpc_stream()
+               )
+    end
+
+    # Silently dropping the request would leave the node half-configured, e.g.
+    # with clusters but without listeners, until it happens to reconnect.
+    test "ends the session with RESOURCE_EXHAUSTED beyond the limit" do
+      error =
+        assert_raise GRPC.RPCError, fn ->
+          AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+            [
+              request(type_url: @cluster_type),
+              request(type_url: @listener_type),
+              request(type_url: @route_type)
+            ],
+            grpc_stream()
+          )
+        end
+
+      assert error.status == GRPC.Status.resource_exhausted()
+    end
+
+    test "requests to resource types that are already served are not limited" do
+      assert :ok =
+               AggregatedDiscoveryServiceServer.stream_aggregated_resources(
+                 [
+                   request(type_url: @cluster_type),
+                   request(type_url: @listener_type),
+                   request(type_url: @cluster_type, nonce: "stale")
+                 ],
+                 grpc_stream()
+               )
+    end
+  end
 end
